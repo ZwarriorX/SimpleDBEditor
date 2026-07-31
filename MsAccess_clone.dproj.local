@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>2026/07/27 20:02:44.000.381,=C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2026/07/27 20:06:48.000.893,C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\Project1.dproj=C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\Project1.dproj</Transaction>
+    <Transaction>2026/07/31 21:00:01.337,C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\DBProject\MainUnit_u.pas=C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\DBProject\Unit1.pas</Transaction>
+    <Transaction>2026/07/31 21:00:26.239,C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\DBProject\MsAccess_clone.dproj=C:\Users\Zabian\Documents\Embarcadero\Studio\Projects\DBProject\Project1.dproj</Transaction>
+  </Transactions>
+</BorlandProject>

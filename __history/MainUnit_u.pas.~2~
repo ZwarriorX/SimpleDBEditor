@@ -1,0 +1,607 @@
+unit MainUnit_u;
+
+interface
+
+uses
+  Winapi.Windows,
+  System.SysUtils,
+  System.Classes,
+  Vcl.Graphics,
+  Vcl.Controls,
+  Vcl.Forms,
+  Vcl.Dialogs,
+  Vcl.StdCtrls,
+  Vcl.ExtCtrls,
+  Vcl.DBGrids,
+  Vcl.DBCtrls,
+  Data.DB,
+  ADODB;
+
+type
+  TMainForm = class(TForm)
+  public
+    constructor Create(AOwner: TComponent); override;
+  private
+    TopPanel: TPanel;
+    BtnOpenDB: TButton;
+    BtnRefresh: TButton;
+    BtnCloseDB: TButton;
+    BtnAddColumn: TButton;
+    BtnDeleteColumn: TButton;
+    CboTables: TComboBox;
+    LblFile: TLabel;
+    Grid: TDBGrid;
+    Nav: TDBNavigator;
+    OpenDlg: TOpenDialog;
+
+    Conn: TADOConnection;
+    Table: TADOTable;
+    DS: TDataSource;
+
+    procedure BuildUI;
+    procedure BuildData;
+    procedure OpenDatabaseClick(Sender: TObject);
+    procedure RefreshTablesClick(Sender: TObject);
+    procedure CloseDatabaseClick(Sender: TObject);
+    procedure AddColumnClick(Sender: TObject);
+    procedure DeleteColumnClick(Sender: TObject);
+    procedure TableChanged(Sender: TObject);
+    procedure OpenSelectedTable;
+    procedure FillTableList;
+    procedure AutoSizeGridColumns;
+    procedure UpdateUIState;
+    function BuildConnectionString(const FileName: string): string;
+    procedure UpdateCaption;
+  end;
+
+var
+  MainForm: TMainForm;
+
+implementation
+
+function QuoteIdent(const S: string): string;
+begin
+  Result := '[' + S + ']';
+end;
+
+function PromptNewColumn(out AName, AType: string): Boolean;
+var
+  Dlg: TForm;
+  EdName: TEdit;
+  CboType: TComboBox;
+  LblName, LblType: TLabel;
+  BtnOK, BtnCancel: TButton;
+begin
+  Result := False;
+  Dlg := TForm.CreateNew(Application);
+  try
+    Dlg.Caption := 'Add Column';
+    Dlg.Position := poScreenCenter;
+    Dlg.BorderStyle := bsDialog;
+    Dlg.BorderIcons := [biSystemMenu];
+    Dlg.Width := 320;
+    Dlg.Height := 190;
+
+    LblName := TLabel.Create(Dlg);
+    LblName.Parent := Dlg;
+    LblName.Left := 16;
+    LblName.Top := 16;
+    LblName.Caption := 'Column name:';
+
+    EdName := TEdit.Create(Dlg);
+    EdName.Parent := Dlg;
+    EdName.Left := 16;
+    EdName.Top := 36;
+    EdName.Width := 270;
+
+    LblType := TLabel.Create(Dlg);
+    LblType.Parent := Dlg;
+    LblType.Left := 16;
+    LblType.Top := 68;
+    LblType.Caption := 'Data type:';
+
+    CboType := TComboBox.Create(Dlg);
+    CboType.Parent := Dlg;
+    CboType.Left := 16;
+    CboType.Top := 88;
+    CboType.Width := 270;
+    CboType.Style := csDropDownList;
+    CboType.Items.Add('Short Text');
+    CboType.Items.Add('Long Text (Memo)');
+    CboType.Items.Add('Integer Number');
+    CboType.Items.Add('Double Number');
+    CboType.Items.Add('Currency');
+    CboType.Items.Add('Date/Time');
+    CboType.Items.Add('Yes/No');
+    CboType.ItemIndex := 0;
+
+    BtnOK := TButton.Create(Dlg);
+    BtnOK.Parent := Dlg;
+    BtnOK.Caption := 'OK';
+    BtnOK.ModalResult := mrOk;
+    BtnOK.Default := True;
+    BtnOK.Left := 128;
+    BtnOK.Top := 130;
+    BtnOK.Width := 75;
+
+    BtnCancel := TButton.Create(Dlg);
+    BtnCancel.Parent := Dlg;
+    BtnCancel.Caption := 'Cancel';
+    BtnCancel.ModalResult := mrCancel;
+    BtnCancel.Cancel := True;
+    BtnCancel.Left := 211;
+    BtnCancel.Top := 130;
+    BtnCancel.Width := 75;
+
+    if Dlg.ShowModal = mrOk then
+    begin
+      AName := Trim(EdName.Text);
+      if AName = '' then
+      begin
+        MessageDlg('Please enter a column name.', mtWarning, [mbOK], 0);
+        Exit(False);
+      end;
+
+      case CboType.ItemIndex of
+        0: AType := 'TEXT(255)';
+        1: AType := 'MEMO';
+        2: AType := 'INTEGER';
+        3: AType := 'DOUBLE';
+        4: AType := 'CURRENCY';
+        5: AType := 'DATETIME';
+        6: AType := 'YESNO';
+      else
+        AType := 'TEXT(255)';
+      end;
+
+      Result := True;
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+function PromptSelectColumn(Items: TStrings; const ACaption, APrompt: string;
+  out ASelected: string): Boolean;
+var
+  Dlg: TForm;
+  Lbl: TLabel;
+  Cbo: TComboBox;
+  BtnOK, BtnCancel: TButton;
+begin
+  Result := False;
+  Dlg := TForm.CreateNew(Application);
+  try
+    Dlg.Caption := ACaption;
+    Dlg.Position := poScreenCenter;
+    Dlg.BorderStyle := bsDialog;
+    Dlg.BorderIcons := [biSystemMenu];
+    Dlg.Width := 320;
+    Dlg.Height := 150;
+
+    Lbl := TLabel.Create(Dlg);
+    Lbl.Parent := Dlg;
+    Lbl.Left := 16;
+    Lbl.Top := 16;
+    Lbl.Caption := APrompt;
+
+    Cbo := TComboBox.Create(Dlg);
+    Cbo.Parent := Dlg;
+    Cbo.Left := 16;
+    Cbo.Top := 36;
+    Cbo.Width := 270;
+    Cbo.Style := csDropDownList;
+    Cbo.Items.Assign(Items);
+    if Cbo.Items.Count > 0 then
+      Cbo.ItemIndex := 0;
+
+    BtnOK := TButton.Create(Dlg);
+    BtnOK.Parent := Dlg;
+    BtnOK.Caption := 'OK';
+    BtnOK.ModalResult := mrOk;
+    BtnOK.Default := True;
+    BtnOK.Left := 128;
+    BtnOK.Top := 90;
+    BtnOK.Width := 75;
+
+    BtnCancel := TButton.Create(Dlg);
+    BtnCancel.Parent := Dlg;
+    BtnCancel.Caption := 'Cancel';
+    BtnCancel.ModalResult := mrCancel;
+    BtnCancel.Cancel := True;
+    BtnCancel.Left := 211;
+    BtnCancel.Top := 90;
+    BtnCancel.Width := 75;
+
+    if Cbo.Items.Count = 0 then
+    begin
+      MessageDlg('There are no columns to choose from.', mtInformation, [mbOK], 0);
+      Exit(False);
+    end;
+
+    if Dlg.ShowModal = mrOk then
+    begin
+      if Cbo.ItemIndex < 0 then
+        Exit(False);
+      ASelected := Cbo.Items[Cbo.ItemIndex];
+      Result := True;
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+constructor TMainForm.Create(AOwner: TComponent);
+begin
+  inherited CreateNew(AOwner);
+
+  Name := 'MainForm';
+  Caption := 'Simple Database Editor';
+  Position := poScreenCenter;
+  Width := 1100;
+  Height := 700;
+
+  BuildUI;
+  BuildData;
+  UpdateUIState;
+end;
+
+procedure TMainForm.BuildUI;
+begin
+  Color := clBtnFace;
+
+  TopPanel := TPanel.Create(Self);
+  TopPanel.Parent := Self;
+  TopPanel.Align := alTop;
+  TopPanel.Height := 56;
+  TopPanel.BevelOuter := bvNone;
+  TopPanel.Padding.Left := 8;
+  TopPanel.Padding.Top := 8;
+  TopPanel.Padding.Right := 8;
+  TopPanel.Padding.Bottom := 8;
+
+  BtnOpenDB := TButton.Create(Self);
+  BtnOpenDB.Parent := TopPanel;
+  BtnOpenDB.Left := 8;
+  BtnOpenDB.Top := 12;
+  BtnOpenDB.Width := 120;
+  BtnOpenDB.Caption := 'Open Database';
+  BtnOpenDB.OnClick := OpenDatabaseClick;
+
+  BtnRefresh := TButton.Create(Self);
+  BtnRefresh.Parent := TopPanel;
+  BtnRefresh.Left := 136;
+  BtnRefresh.Top := 12;
+  BtnRefresh.Width := 90;
+  BtnRefresh.Caption := 'Refresh';
+  BtnRefresh.OnClick := RefreshTablesClick;
+
+  BtnCloseDB := TButton.Create(Self);
+  BtnCloseDB.Parent := TopPanel;
+  BtnCloseDB.Left := 234;
+  BtnCloseDB.Top := 12;
+  BtnCloseDB.Width := 90;
+  BtnCloseDB.Caption := 'Close DB';
+  BtnCloseDB.OnClick := CloseDatabaseClick;
+
+  BtnAddColumn := TButton.Create(Self);
+  BtnAddColumn.Parent := TopPanel;
+  BtnAddColumn.Left := 334;
+  BtnAddColumn.Top := 12;
+  BtnAddColumn.Width := 110;
+  BtnAddColumn.Caption := 'Add Column';
+  BtnAddColumn.OnClick := AddColumnClick;
+
+  BtnDeleteColumn := TButton.Create(Self);
+  BtnDeleteColumn.Parent := TopPanel;
+  BtnDeleteColumn.Left := 454;
+  BtnDeleteColumn.Top := 12;
+  BtnDeleteColumn.Width := 110;
+  BtnDeleteColumn.Caption := 'Delete Column';
+  BtnDeleteColumn.OnClick := DeleteColumnClick;
+
+  CboTables := TComboBox.Create(Self);
+  CboTables.Parent := TopPanel;
+  CboTables.Left := 574;
+  CboTables.Top := 13;
+  CboTables.Width := 220;
+  CboTables.Style := csDropDownList;
+  CboTables.OnChange := TableChanged;
+
+  LblFile := TLabel.Create(Self);
+  LblFile.Parent := TopPanel;
+  LblFile.Left := 802;
+  LblFile.Top := 17;
+  LblFile.Caption := 'No database opened';
+
+  Grid := TDBGrid.Create(Self);
+  Grid.Parent := Self;
+  Grid.Align := alClient;
+  Grid.Options := Grid.Options + [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColLines, dgRowLines];
+  Grid.ReadOnly := False;
+
+  Nav := TDBNavigator.Create(Self);
+  Nav.Parent := Self;
+  Nav.Align := alBottom;
+  Nav.Height := 44;
+  Nav.VisibleButtons := [nbFirst, nbPrior, nbNext, nbLast, nbInsert, nbDelete, nbEdit, nbPost, nbCancel, nbRefresh];
+
+  OpenDlg := TOpenDialog.Create(Self);
+  OpenDlg.Options := [ofFileMustExist, ofPathMustExist];
+  OpenDlg.Filter := 'Access Database (*.mdb;*.accdb)|*.mdb;*.accdb|All Files (*.*)|*.*';
+end;
+
+procedure TMainForm.BuildData;
+begin
+  Conn := TADOConnection.Create(Self);
+  Conn.LoginPrompt := False;
+  Conn.KeepConnection := False;
+
+  Table := TADOTable.Create(Self);
+  Table.Connection := Conn;
+  Table.CursorType := ctStatic;
+  Table.LockType := ltOptimistic;
+
+  DS := TDataSource.Create(Self);
+  DS.DataSet := Table;
+
+  Grid.DataSource := DS;
+  Nav.DataSource := DS;
+end;
+
+function TMainForm.BuildConnectionString(const FileName: string): string;
+begin
+  if SameText(ExtractFileExt(FileName), '.mdb') then
+    Result :=
+      'Provider=Microsoft.Jet.OLEDB.4.0;' +
+      'Data Source=' + FileName + ';' +
+      'Persist Security Info=False;'
+  else
+    Result :=
+      'Provider=Microsoft.ACE.OLEDB.12.0;' +
+      'Data Source=' + FileName + ';' +
+      'Persist Security Info=False;';
+end;
+
+procedure TMainForm.UpdateCaption;
+begin
+  if Conn.Connected then
+    Caption := 'Simple Database Editor - Connected'
+  else
+    Caption := 'Simple Database Editor';
+end;
+
+procedure TMainForm.UpdateUIState;
+var
+  Connected, HasTable: Boolean;
+begin
+  Connected := Conn.Connected;
+  HasTable := Connected and Table.Active;
+
+  BtnRefresh.Enabled := Connected;
+  BtnCloseDB.Enabled := Connected;
+  CboTables.Enabled := Connected;
+  BtnAddColumn.Enabled := HasTable;
+  BtnDeleteColumn.Enabled := HasTable;
+end;
+
+procedure TMainForm.OpenDatabaseClick(Sender: TObject);
+begin
+  if not OpenDlg.Execute then
+    Exit;
+
+  Screen.Cursor := crHourGlass;
+  try
+    try
+      if Conn.Connected then
+        Conn.Close;
+
+      Conn.ConnectionString := BuildConnectionString(OpenDlg.FileName);
+      Conn.Open;
+
+      LblFile.Caption := ExtractFileName(OpenDlg.FileName);
+      FillTableList;
+
+      if CboTables.Items.Count > 0 then
+      begin
+        CboTables.ItemIndex := 0;
+        OpenSelectedTable;
+      end;
+
+      UpdateCaption;
+    except
+      on E: Exception do
+      begin
+        Conn.Close;
+        MessageDlg('Could not open database:'#13#10 + E.Message, mtError, [mbOK], 0);
+        UpdateCaption;
+      end;
+    end;
+  finally
+    Screen.Cursor := crDefault;
+    UpdateUIState;
+  end;
+end;
+
+procedure TMainForm.FillTableList;
+begin
+  CboTables.Items.BeginUpdate;
+  try
+    CboTables.Items.Clear;
+    if Conn.Connected then
+      Conn.GetTableNames(CboTables.Items, False);
+  finally
+    CboTables.Items.EndUpdate;
+  end;
+end;
+
+procedure TMainForm.AutoSizeGridColumns;
+var
+  I, ColWidth: Integer;
+begin
+  if Grid.Columns.Count = 0 then
+    Exit;
+
+  ColWidth := (Grid.ClientWidth - 20) div Grid.Columns.Count;
+  if ColWidth < 40 then
+    ColWidth := 40;
+
+  for I := 0 to Grid.Columns.Count - 1 do
+    Grid.Columns[I].Width := ColWidth;
+end;
+
+procedure TMainForm.OpenSelectedTable;
+begin
+  if not Conn.Connected then
+    Exit;
+
+  if CboTables.ItemIndex < 0 then
+    Exit;
+
+  try
+    Table.Close;
+    Table.TableName := CboTables.Items[CboTables.ItemIndex];
+    Table.Open;
+    AutoSizeGridColumns;
+  except
+    on E: Exception do
+      MessageDlg('Could not open table:'#13#10 + E.Message, mtError, [mbOK], 0);
+  end;
+
+  UpdateUIState;
+end;
+
+procedure TMainForm.TableChanged(Sender: TObject);
+begin
+  OpenSelectedTable;
+end;
+
+procedure TMainForm.RefreshTablesClick(Sender: TObject);
+begin
+  if not Conn.Connected then
+  begin
+    MessageDlg('Open a database first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  FillTableList;
+  if CboTables.Items.Count > 0 then
+  begin
+    if CboTables.ItemIndex < 0 then
+      CboTables.ItemIndex := 0;
+    OpenSelectedTable;
+  end;
+end;
+
+procedure TMainForm.CloseDatabaseClick(Sender: TObject);
+begin
+  try
+    Table.Close;
+    Conn.Close;
+    CboTables.Items.Clear;
+    CboTables.ItemIndex := -1;
+    LblFile.Caption := 'No database opened';
+    UpdateCaption;
+  except
+    on E: Exception do
+      MessageDlg(E.Message, mtError, [mbOK], 0);
+  end;
+  UpdateUIState;
+end;
+
+procedure TMainForm.AddColumnClick(Sender: TObject);
+var
+  ColName, ColType, SQL: string;
+begin
+  if not (Conn.Connected and Table.Active) then
+  begin
+    MessageDlg('Open a database and select a table first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  if not PromptNewColumn(ColName, ColType) then
+    Exit;
+
+  if Table.FindField(ColName) <> nil then
+  begin
+    MessageDlg('A column named "' + ColName + '" already exists.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  SQL := Format('ALTER TABLE %s ADD COLUMN %s %s',
+    [QuoteIdent(Table.TableName), QuoteIdent(ColName), ColType]);
+
+  Screen.Cursor := crHourGlass;
+  try
+    try
+      Table.Close;
+      Conn.Execute(SQL);
+      Table.Open;
+      AutoSizeGridColumns;
+    except
+      on E: Exception do
+      begin
+        MessageDlg('Could not add column:'#13#10 + E.Message, mtError, [mbOK], 0);
+        if not Table.Active then
+          Table.Open;
+      end;
+    end;
+  finally
+    Screen.Cursor := crDefault;
+    UpdateUIState;
+  end;
+end;
+
+procedure TMainForm.DeleteColumnClick(Sender: TObject);
+var
+  ColNames: TStringList;
+  I: Integer;
+  ColName, SQL: string;
+begin
+  if not (Conn.Connected and Table.Active) then
+  begin
+    MessageDlg('Open a database and select a table first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  ColNames := TStringList.Create;
+  try
+    for I := 0 to Table.FieldCount - 1 do
+      ColNames.Add(Table.Fields[I].FieldName);
+
+    if not PromptSelectColumn(ColNames, 'Delete Column', 'Column to delete:', ColName) then
+      Exit;
+  finally
+    ColNames.Free;
+  end;
+
+  if MessageDlg(Format('Delete column "%s"?'#13#10 +
+    'All data in this column will be permanently lost.', [ColName]),
+    mtWarning, [mbYes, mbNo], 0) <> mrYes then
+    Exit;
+
+  SQL := Format('ALTER TABLE %s DROP COLUMN %s',
+    [QuoteIdent(Table.TableName), QuoteIdent(ColName)]);
+
+  Screen.Cursor := crHourGlass;
+  try
+    try
+      Table.Close;
+      Conn.Execute(SQL);
+      Table.Open;
+      AutoSizeGridColumns;
+    except
+      on E: Exception do
+      begin
+        MessageDlg('Could not delete column:'#13#10 + E.Message, mtError, [mbOK], 0);
+        if not Table.Active then
+          Table.Open;
+      end;
+    end;
+  finally
+    Screen.Cursor := crDefault;
+    UpdateUIState;
+  end;
+end;
+
+end.
