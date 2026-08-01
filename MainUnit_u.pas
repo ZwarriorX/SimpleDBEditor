@@ -31,6 +31,8 @@ type
     BtnRefresh: TButton;
     BtnCloseDB: TButton;
     BtnConvert: TButton;
+    BtnNewTable: TButton;
+    BtnRenameTable: TButton;
     BtnAddColumn: TButton;
     BtnDeleteColumn: TButton;
     BtnToggleView: TButton;
@@ -54,6 +56,8 @@ type
     procedure RefreshTablesClick(Sender: TObject);
     procedure CloseDatabaseClick(Sender: TObject);
     procedure ConvertDatabaseClick(Sender: TObject);
+    procedure NewTableClick(Sender: TObject);
+    procedure RenameTableClick(Sender: TObject);
     procedure AddColumnClick(Sender: TObject);
     procedure DeleteColumnClick(Sender: TObject);
     procedure ToggleViewClick(Sender: TObject);
@@ -64,6 +68,7 @@ type
     procedure AutoSizeGridColumns;
     procedure PopulateDesignView;
     procedure SwitchToDatasheetView;
+    procedure ShowDesignView;
     procedure UpdateUIState;
     function OpenConnection(const ConnStr, DisplayName: string): Boolean;
     function BuildConnectionString(const FileName: string): string;
@@ -78,6 +83,33 @@ implementation
 function QuoteIdent(const S: string): string;
 begin
   Result := '[' + S + ']';
+end;
+
+function ListHasName(List: TStrings; const AName: string): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to List.Count - 1 do
+    if SameText(List[I], AName) then
+      Exit(True);
+end;
+
+// Wraps an exception message with a specific hint when it looks like a
+// missing/mismatched OLE DB provider or ADOX registration, which is the
+// usual cause of "Class not registered" when creating or converting
+// Access databases.
+procedure ShowOleError(const Context: string; E: Exception);
+begin
+  if Pos('CLASS NOT REGISTERED', UpperCase(E.Message)) > 0 then
+    MessageDlg(Context + ':'#13#10 + E.Message + #13#10#13#10 +
+      'This usually means the OLE DB provider (Jet/ACE) or ADOX is not registered ' +
+      'for this application''s bitness. Check that the project''s target platform ' +
+      '(Win32 or Win64) matches the installed Microsoft Access Database Engine, and ' +
+      'that the matching 32-bit or 64-bit "Microsoft Access Database Engine ' +
+      'Redistributable" is installed.', mtError, [mbOK], 0)
+  else
+    MessageDlg(Context + ':'#13#10 + E.Message, mtError, [mbOK], 0);
 end;
 
 // Display name for a field's type, in the style Access uses in its
@@ -173,15 +205,29 @@ begin
   end;
 end;
 
-// Renaming a column isn't supported by Jet/ACE's ALTER TABLE syntax, but
-// setting an ADOX Column's Name property does rename it in place.
+// Renaming a column/table isn't supported by Jet/ACE's ALTER TABLE syntax,
+// but setting an ADOX Column/Table's Name property does rename it in
+// place. ActiveConnection is set from the connection STRING rather than
+// the live ADO connection object/interface - assigning the interface
+// through late binding is unreliable and was the reason renames were
+// silently failing.
 procedure RenameColumnADOX(Conn: TADOConnection; const TableName, OldName, NewName: string);
 var
   Catalog: OleVariant;
 begin
   Catalog := CreateOleObject('ADOX.Catalog');
-  Catalog.ActiveConnection := Conn.ConnectionObject;
+  Catalog.ActiveConnection := Conn.ConnectionString;
   Catalog.Tables[TableName].Columns[OldName].Name := NewName;
+  Catalog := Unassigned;
+end;
+
+procedure RenameTableADOX(Conn: TADOConnection; const OldName, NewName: string);
+var
+  Catalog: OleVariant;
+begin
+  Catalog := CreateOleObject('ADOX.Catalog');
+  Catalog.ActiveConnection := Conn.ConnectionString;
+  Catalog.Tables[OldName].Name := NewName;
   Catalog := Unassigned;
 end;
 
@@ -534,7 +580,7 @@ begin
   TopPanel := TPanel.Create(Self);
   TopPanel.Parent := Self;
   TopPanel.Align := alTop;
-  TopPanel.Height := 80;
+  TopPanel.Height := 116;
   TopPanel.BevelOuter := bvNone;
   TopPanel.Padding.Left := 8;
   TopPanel.Padding.Top := 8;
@@ -582,34 +628,26 @@ begin
   BtnConvert.Caption := 'Convert to mdb/accdb';
   BtnConvert.OnClick := ConvertDatabaseClick;
 
-  // -- Row 2: table / column / view actions --
-  BtnAddColumn := TButton.Create(Self);
-  BtnAddColumn.Parent := TopPanel;
-  BtnAddColumn.Left := 8;
-  BtnAddColumn.Top := 40;
-  BtnAddColumn.Width := 110;
-  BtnAddColumn.Caption := 'Add Column';
-  BtnAddColumn.OnClick := AddColumnClick;
+  // -- Row 2: table-level actions + table selector --
+  BtnNewTable := TButton.Create(Self);
+  BtnNewTable.Parent := TopPanel;
+  BtnNewTable.Left := 8;
+  BtnNewTable.Top := 40;
+  BtnNewTable.Width := 100;
+  BtnNewTable.Caption := 'New Table';
+  BtnNewTable.OnClick := NewTableClick;
 
-  BtnDeleteColumn := TButton.Create(Self);
-  BtnDeleteColumn.Parent := TopPanel;
-  BtnDeleteColumn.Left := 126;
-  BtnDeleteColumn.Top := 40;
-  BtnDeleteColumn.Width := 110;
-  BtnDeleteColumn.Caption := 'Delete Column';
-  BtnDeleteColumn.OnClick := DeleteColumnClick;
-
-  BtnToggleView := TButton.Create(Self);
-  BtnToggleView.Parent := TopPanel;
-  BtnToggleView.Left := 244;
-  BtnToggleView.Top := 40;
-  BtnToggleView.Width := 110;
-  BtnToggleView.Caption := 'Design View';
-  BtnToggleView.OnClick := ToggleViewClick;
+  BtnRenameTable := TButton.Create(Self);
+  BtnRenameTable.Parent := TopPanel;
+  BtnRenameTable.Left := 116;
+  BtnRenameTable.Top := 40;
+  BtnRenameTable.Width := 120;
+  BtnRenameTable.Caption := 'Rename Table';
+  BtnRenameTable.OnClick := RenameTableClick;
 
   CboTables := TComboBox.Create(Self);
   CboTables.Parent := TopPanel;
-  CboTables.Left := 362;
+  CboTables.Left := 244;
   CboTables.Top := 41;
   CboTables.Width := 220;
   CboTables.Style := csDropDownList;
@@ -617,9 +655,34 @@ begin
 
   LblFile := TLabel.Create(Self);
   LblFile.Parent := TopPanel;
-  LblFile.Left := 590;
+  LblFile.Left := 472;
   LblFile.Top := 45;
   LblFile.Caption := 'No database opened';
+
+  // -- Row 3: column / view actions --
+  BtnAddColumn := TButton.Create(Self);
+  BtnAddColumn.Parent := TopPanel;
+  BtnAddColumn.Left := 8;
+  BtnAddColumn.Top := 72;
+  BtnAddColumn.Width := 110;
+  BtnAddColumn.Caption := 'Add Column';
+  BtnAddColumn.OnClick := AddColumnClick;
+
+  BtnDeleteColumn := TButton.Create(Self);
+  BtnDeleteColumn.Parent := TopPanel;
+  BtnDeleteColumn.Left := 126;
+  BtnDeleteColumn.Top := 72;
+  BtnDeleteColumn.Width := 110;
+  BtnDeleteColumn.Caption := 'Delete Column';
+  BtnDeleteColumn.OnClick := DeleteColumnClick;
+
+  BtnToggleView := TButton.Create(Self);
+  BtnToggleView.Parent := TopPanel;
+  BtnToggleView.Left := 244;
+  BtnToggleView.Top := 72;
+  BtnToggleView.Width := 110;
+  BtnToggleView.Caption := 'Design View';
+  BtnToggleView.OnClick := ToggleViewClick;
 
   // -- Datasheet (normal grid) view --
   Grid := TDBGrid.Create(Self);
@@ -710,6 +773,8 @@ begin
   BtnRefresh.Enabled := Connected;
   BtnCloseDB.Enabled := Connected;
   BtnConvert.Enabled := Connected;
+  BtnNewTable.Enabled := Connected;
+  BtnRenameTable.Enabled := HasTable;
   CboTables.Enabled := Connected;
   BtnAddColumn.Enabled := HasTable;
   BtnDeleteColumn.Enabled := HasTable;
@@ -741,7 +806,7 @@ begin
     on E: Exception do
     begin
       Conn.Close;
-      MessageDlg('Could not open database:'#13#10 + E.Message, mtError, [mbOK], 0);
+      ShowOleError('Could not open database', E);
       UpdateCaption;
     end;
   end;
@@ -797,7 +862,7 @@ begin
         OpenConnection(ConnStr, ExtractFileName(SaveDlg.FileName));
       except
         on E: Exception do
-          MessageDlg('Could not create database:'#13#10 + E.Message, mtError, [mbOK], 0);
+          ShowOleError('Could not create database', E);
       end;
     finally
       Screen.Cursor := crDefault;
@@ -951,8 +1016,7 @@ begin
         end;
       except
         on E: Exception do
-          MessageDlg('Conversion failed on table "' + FailedTable + '":'#13#10 + E.Message,
-            mtError, [mbOK], 0);
+          ShowOleError('Conversion failed on table "' + FailedTable + '"', E);
       end;
     finally
       SrcTable.Free;
@@ -978,6 +1042,115 @@ begin
       Conn.GetTableNames(CboTables.Items, False);
   finally
     CboTables.Items.EndUpdate;
+  end;
+end;
+
+// Creates a new table with a single AutoNumber "ID" column (Access
+// requires at least one field to exist), then opens it in Design View
+// so more fields can be added straight away.
+procedure TMainForm.NewTableClick(Sender: TObject);
+var
+  NewName, SQL: string;
+begin
+  if not Conn.Connected then
+  begin
+    MessageDlg('Open a database first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  NewName := '';
+  if not InputQuery('New Table', 'Table name:', NewName) then
+    Exit;
+
+  NewName := Trim(NewName);
+  if NewName = '' then
+  begin
+    MessageDlg('Please enter a table name.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if ListHasName(CboTables.Items, NewName) then
+  begin
+    MessageDlg('A table named "' + NewName + '" already exists.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  SQL := 'CREATE TABLE ' + QuoteIdent(NewName) + ' ([ID] COUNTER)';
+
+  Screen.Cursor := crHourGlass;
+  try
+    try
+      Conn.Execute(SQL);
+      FillTableList;
+      CboTables.ItemIndex := CboTables.Items.IndexOf(NewName);
+      OpenSelectedTable;
+      if Table.Active then
+        ShowDesignView;
+    except
+      on E: Exception do
+        ShowOleError('Could not create table', E);
+    end;
+  finally
+    Screen.Cursor := crDefault;
+    UpdateUIState;
+  end;
+end;
+
+procedure TMainForm.RenameTableClick(Sender: TObject);
+var
+  OldName, NewName: string;
+begin
+  if not (Conn.Connected and Table.Active) then
+  begin
+    MessageDlg('Open a database and select a table first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  OldName := Table.TableName;
+  NewName := OldName;
+  if not InputQuery('Rename Table', 'New name for "' + OldName + '":', NewName) then
+    Exit;
+
+  NewName := Trim(NewName);
+  if NewName = '' then
+  begin
+    MessageDlg('Please enter a table name.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if SameText(NewName, OldName) then
+    Exit;
+
+  if ListHasName(CboTables.Items, NewName) then
+  begin
+    MessageDlg('A table named "' + NewName + '" already exists.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  Screen.Cursor := crHourGlass;
+  try
+    try
+      Table.Close;
+      RenameTableADOX(Conn, OldName, NewName);
+      FillTableList;
+      CboTables.ItemIndex := CboTables.Items.IndexOf(NewName);
+      OpenSelectedTable;
+    except
+      on E: Exception do
+      begin
+        ShowOleError('Could not rename table', E);
+        if not Table.Active then
+        begin
+          FillTableList;
+          CboTables.ItemIndex := CboTables.Items.IndexOf(OldName);
+          if CboTables.ItemIndex >= 0 then
+            OpenSelectedTable;
+        end;
+      end;
+    end;
+  finally
+    Screen.Cursor := crDefault;
+    UpdateUIState;
   end;
 end;
 
@@ -1033,6 +1206,16 @@ begin
   BtnToggleView.Caption := 'Design View';
 end;
 
+procedure TMainForm.ShowDesignView;
+begin
+  ShowingDesign := True;
+  PopulateDesignView;
+  Grid.Visible := False;
+  Nav.Visible := False;
+  DesignView.Visible := True;
+  BtnToggleView.Caption := 'Datasheet View';
+end;
+
 procedure TMainForm.ToggleViewClick(Sender: TObject);
 begin
   if not Table.Active then
@@ -1041,18 +1224,10 @@ begin
     Exit;
   end;
 
-  ShowingDesign := not ShowingDesign;
-
   if ShowingDesign then
-  begin
-    PopulateDesignView;
-    Grid.Visible := False;
-    Nav.Visible := False;
-    DesignView.Visible := True;
-    BtnToggleView.Caption := 'Datasheet View';
-  end
+    SwitchToDatasheetView
   else
-    SwitchToDatasheetView;
+    ShowDesignView;
 end;
 
 // Double-clicking a row in Design View lets the user rename the field
@@ -1121,7 +1296,7 @@ begin
     except
       on E: Exception do
       begin
-        MessageDlg('Could not update field:'#13#10 + E.Message, mtError, [mbOK], 0);
+        ShowOleError('Could not update field', E);
         if not Table.Active then
           Table.Open;
       end;
@@ -1146,8 +1321,6 @@ begin
     Table.Open;
     AutoSizeGridColumns;
     SwitchToDatasheetView;
-    if ShowingDesign then
-      PopulateDesignView;
   except
     on E: Exception do
       MessageDlg('Could not open table:'#13#10 + E.Message, mtError, [mbOK], 0);
